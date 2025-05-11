@@ -1,0 +1,178 @@
+#include <WiFi.h>
+#include <WebServer.h>
+#include "DHT.h"
+
+// Wi-Fi credentials
+const char* ssid = "Wokwi-GUEST";
+const char* password = "";
+
+// Web server on port 80
+WebServer server(80);
+
+// Pin definitions
+#define DHTPIN 15
+#define DHTTYPE DHT22
+#define STATUS_LEDPIN 2
+#define HEATER_LEDPIN 5
+#define BUZZERPIN 4
+
+// Temperature thresholds (refined)
+#define TEMP_IDLE 21.0
+#define TEMP_HEATING 24.0
+#define TEMP_TARGET_MIN 24.0
+#define TEMP_TARGET_MAX 25.0
+#define TEMP_OVERHEAT 26.0
+
+// State enumeration
+typedef enum {
+  IDLE,
+  HEATING,
+  STABILIZING,
+  TARGET_REACHED,
+  OVERHEAT
+} HeaterState;
+
+// Global variables
+DHT dht(DHTPIN, DHTTYPE);
+HeaterState state = IDLE;
+float currentTemp = 0.0;
+
+// Helper function to beep buzzer
+void beep_buzzer() {
+  for (int i = 0; i < 3; i++) {
+    digitalWrite(BUZZERPIN, HIGH);
+    delay(300);
+    digitalWrite(BUZZERPIN, LOW);
+    delay(200);
+  }
+}
+
+// Convert state to string
+const char* getStateString(HeaterState s) {
+  switch (s) {
+    case IDLE: return "IDLE";
+    case HEATING: return "HEATING";
+    case STABILIZING: return "STABILIZING";
+    case TARGET_REACHED: return "TARGET REACHED";
+    case OVERHEAT: return "OVERHEAT";
+    default: return "UNKNOWN";
+  }
+}
+
+// Generate HTML page
+String generateHTML() {
+  String html = "<!DOCTYPE html><html><head><meta http-equiv='refresh' content='5'><title>Heater Control</title></head><body>";
+  html += "<h2>ESP32 Heater Control Dashboard</h2>";
+  html += "<p><strong>Temperature:</strong> " + String(currentTemp, 1) + " °C</p>";
+  html += "<p><strong>Heater State:</strong> " + String(getStateString(state)) + "</p>";
+  html += "</body></html>";
+  return html;
+}
+
+// Handle root request
+void handleRoot() {
+  server.send(200, "text/html", generateHTML());
+}
+
+void setup() {
+  Serial.begin(115200);
+  dht.begin();
+
+  pinMode(STATUS_LEDPIN, OUTPUT);
+  pinMode(HEATER_LEDPIN, OUTPUT);
+  pinMode(BUZZERPIN, OUTPUT);
+  digitalWrite(STATUS_LEDPIN, LOW);
+  digitalWrite(HEATER_LEDPIN, LOW);
+  digitalWrite(BUZZERPIN, LOW);
+
+  WiFi.begin(ssid, password);
+  Serial.print("Connecting to WiFi");
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+
+  Serial.println("\nConnected to WiFi");
+  Serial.print("IP Address: ");
+  Serial.println(WiFi.localIP());
+
+  server.on("/", handleRoot);
+  server.begin();
+  Serial.println("HTTP server started");
+}
+
+void loop() {
+  currentTemp = dht.readTemperature();
+
+  if (isnan(currentTemp)) {
+    Serial.println("Failed to read from DHT sensor");
+    delay(2000);
+    return;
+  }
+
+  // Determine state
+  if (currentTemp < TEMP_IDLE) {
+    state = IDLE;
+  } else if (currentTemp < TEMP_HEATING) {
+    state = HEATING;
+  } else if (currentTemp >= TEMP_TARGET_MIN && currentTemp <= TEMP_TARGET_MAX) {
+    state = TARGET_REACHED;
+  } else if (currentTemp > TEMP_OVERHEAT) {
+    state = OVERHEAT;
+  } else {
+    state = STABILIZING;
+  }
+
+  // Act based on state
+  switch (state) {
+    case IDLE:
+      digitalWrite(HEATER_LEDPIN, LOW);
+      digitalWrite(STATUS_LEDPIN, LOW);
+      digitalWrite(BUZZERPIN, LOW);
+      break;
+    case HEATING:
+      digitalWrite(HEATER_LEDPIN, HIGH);
+      digitalWrite(STATUS_LEDPIN, LOW);
+      digitalWrite(BUZZERPIN, LOW);
+      break;
+    case STABILIZING:
+      for (int i = 0; i < 3; i++) {
+      digitalWrite(HEATER_LEDPIN, HIGH);
+      delay(300);
+      digitalWrite(HEATER_LEDPIN, LOW);
+      delay(200);
+      }
+      digitalWrite(STATUS_LEDPIN, HIGH);
+      digitalWrite(BUZZERPIN, LOW);
+      break;
+    case TARGET_REACHED:
+      digitalWrite(HEATER_LEDPIN, LOW);
+      for (int i = 0; i < 3; i++) {
+      digitalWrite(STATUS_LEDPIN, HIGH);
+      delay(300);
+      digitalWrite(STATUS_LEDPIN, LOW);
+      delay(200);
+      }
+      digitalWrite(BUZZERPIN, LOW);
+      break;
+    case OVERHEAT:
+      digitalWrite(HEATER_LEDPIN, LOW);
+      for (int i = 0; i < 3; i++) {
+      digitalWrite(STATUS_LEDPIN, HIGH);
+      delay(300);
+      digitalWrite(STATUS_LEDPIN, LOW);
+      delay(200);
+      }
+      beep_buzzer();
+      break;
+  }
+            
+  // UART output
+  Serial.print("UART -> Temp: ");
+  Serial.print(currentTemp);
+  Serial.print(" °C, State: ");
+  Serial.println(getStateString(state));
+
+  server.handleClient();
+  delay(2000);
+}
